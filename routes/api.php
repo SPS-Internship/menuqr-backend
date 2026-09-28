@@ -12,6 +12,7 @@ use App\Http\Controllers\MenuVariantController;
 use App\Http\Controllers\MenuAddonController;
 use App\Http\Controllers\PromoController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\AdminSettingsController;
 
 
 // =========================================================
@@ -20,6 +21,8 @@ use App\Http\Controllers\ReportController;
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+
+
 
 
 // =========================================================
@@ -124,6 +127,8 @@ Route::get(
 
 Route::middleware('auth:sanctum')->group(function () {
 
+
+
     // =========================================================
     // AUTH
     // =========================================================
@@ -142,6 +147,25 @@ Route::middleware('auth:sanctum')->group(function () {
         '/admin/categories',
         [CategoryController::class, 'adminIndex']
     );
+
+    // =========================================================
+// SETTINGS ADMIN
+// =========================================================
+
+Route::get(
+    '/admin/settings/profile',
+    [AdminSettingsController::class, 'profile']
+);
+
+Route::put(
+    '/admin/settings/profile',
+    [AdminSettingsController::class, 'updateProfile']
+);
+
+Route::put(
+    '/admin/settings/password',
+    [AdminSettingsController::class, 'updatePassword']
+);
 
 
     // =========================================================
