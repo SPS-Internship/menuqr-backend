@@ -538,6 +538,111 @@ class OrderController extends Controller
 
 
     // =========================================================
+// UPDATE STATUS PESANAN
+// ADMIN
+// =========================================================
+
+public function updateStatus(
+    Request $request,
+    $id
+) {
+    $validated = $request->validate([
+        'status' =>
+            'required|in:pending,confirmed,completed,cancelled',
+    ]);
+
+    // =========================================================
+    // CARI ORDER SESUAI RESTAURANT ADMIN
+    // =========================================================
+
+    $order = Order::where(
+        'restaurant_id',
+        $request->user()->restaurant_id
+    )
+        ->findOrFail($id);
+
+    $currentStatus = $order->status;
+    $newStatus = $validated['status'];
+
+    // =========================================================
+    // STATUS YANG SUDAH FINAL
+    // =========================================================
+
+    if (
+        in_array(
+            $currentStatus,
+            ['completed', 'cancelled']
+        )
+    ) {
+        return response()->json([
+            'message' =>
+                'Status pesanan sudah tidak dapat diubah.',
+        ], 422);
+    }
+
+    // =========================================================
+    // ATURAN PERUBAHAN STATUS
+    // =========================================================
+
+    $allowedTransitions = [
+        'pending' => [
+            'confirmed',
+            'cancelled',
+        ],
+
+        'confirmed' => [
+            'completed',
+            'cancelled',
+        ],
+    ];
+
+    if (
+        !isset($allowedTransitions[$currentStatus]) ||
+        !in_array(
+            $newStatus,
+            $allowedTransitions[$currentStatus]
+        )
+    ) {
+        return response()->json([
+            'message' =>
+                "Status pesanan tidak dapat diubah dari {$currentStatus} menjadi {$newStatus}.",
+        ], 422);
+    }
+
+    // =========================================================
+    // UPDATE STATUS
+    // =========================================================
+
+    $order->update([
+        'status' => $newStatus,
+    ]);
+
+    // =========================================================
+    // LOAD RELASI
+    // =========================================================
+
+    $order->load([
+        'restaurant',
+        'table',
+        'promo',
+        'items.menu',
+        'items.variant',
+    ]);
+
+    // =========================================================
+    // RESPONSE
+    // =========================================================
+
+    return response()->json([
+        'message' =>
+            'Status pesanan berhasil diperbarui',
+
+        'data' => $order,
+    ]);
+}
+
+
+    // =========================================================
     // UPDATE STATUS PEMBAYARAN
     // ADMIN / KASIR
     // =========================================================

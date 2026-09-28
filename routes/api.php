@@ -339,21 +339,27 @@ Route::put(
 
 
     // =========================================================
-    // ORDERS
-    // =========================================================
+// ORDERS
+// =========================================================
 
-    // Admin melihat semua pesanan restaurant miliknya
-    Route::get(
-        '/orders',
-        [OrderController::class, 'index']
-    );
+// Admin melihat semua pesanan restaurant miliknya
+Route::get(
+    '/orders',
+    [OrderController::class, 'index']
+);
 
-    // Kasir mengubah pembayaran:
-    // unpaid -> paid
-    Route::put(
-        '/orders/{id}/payment-status',
-        [OrderController::class, 'updatePaymentStatus']
-    );
+// Admin mengubah status pesanan
+Route::put(
+    '/orders/{id}/status',
+    [OrderController::class, 'updateStatus']
+);
+
+// Kasir mengubah pembayaran:
+// unpaid -> paid
+Route::put(
+    '/orders/{id}/payment-status',
+    [OrderController::class, 'updatePaymentStatus']
+);
 
 
     // =========================================================
