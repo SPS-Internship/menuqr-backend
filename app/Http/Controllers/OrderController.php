@@ -586,14 +586,13 @@ public function updateStatus(
 
     $allowedTransitions = [
         'pending' => [
-            'confirmed',
-            'cancelled',
-        ],
+    'confirmed',
+    'cancelled',
+],
 
-        'confirmed' => [
-            'completed',
-            'cancelled',
-        ],
+'confirmed' => [
+    'completed',
+],
     ];
 
     if (
