@@ -301,103 +301,105 @@ class OrderController extends Controller
             }
 
             // =====================================================
-            // PROMO
+            // PROMO OTOMATIS
             // =====================================================
 
             $promo = null;
             $discount = 0;
 
-            if (!empty($validated['promo_id'])) {
-
-                $promo = Promo::findOrFail(
-                    $validated['promo_id']
-                );
-
-                // Promo harus milik restaurant yang sama
-                if (
-                    $promo->restaurant_id !=
-                    $validated['restaurant_id']
-                ) {
-                    abort(
-                        422,
-                        'Promo tidak sesuai dengan restaurant'
-                    );
-                }
-
-                // Promo harus aktif
-                if (!$promo->is_active) {
-                    abort(
-                        422,
-                        'Promo sedang tidak aktif'
-                    );
-                }
-
-                // Promo belum mulai
-                if (
-                    $promo->starts_at &&
-                    now()->lt($promo->starts_at)
-                ) {
-                    abort(
-                        422,
-                        'Promo belum mulai'
-                    );
-                }
-
-                // Promo sudah berakhir
-                if (
-                    $promo->ends_at &&
-                    now()->gt($promo->ends_at)
-                ) {
-                    abort(
-                        422,
-                        'Promo sudah berakhir'
-                    );
-                }
-
-                // Minimum pembelian
-                if (
-                    $subtotalOrder <
-                    (float) $promo->min_order
-                ) {
-                    abort(
-                        422,
-                        'Minimum pembelian untuk promo ini adalah Rp' .
-                        number_format(
-                            $promo->min_order,
-                            0,
-                            ',',
-                            '.'
-                        )
-                    );
-                }
-
-                // Hitung diskon
-                if ($promo->type === 'percentage') {
-
-                    if ((float) $promo->value > 100) {
-                        abort(
-                            422,
-                            'Persentase diskon tidak boleh lebih dari 100%'
+            /*
+             * Cari semua promo yang:
+             * - milik restaurant yang sedang dipesan
+             * - aktif
+             * - sudah mulai
+             * - belum berakhir
+             * - minimum order terpenuhi
+             */
+            $promos = Promo::where(
+                'restaurant_id',
+                $validated['restaurant_id']
+            )
+                ->where(
+                    'is_active',
+                    true
+                )
+                ->where(function ($query) {
+                    $query->whereNull('starts_at')
+                        ->orWhere(
+                            'starts_at',
+                            '<=',
+                            now()
                         );
-                    }
+                })
+                ->where(function ($query) {
+                    $query->whereNull('ends_at')
+                        ->orWhere(
+                            'ends_at',
+                            '>=',
+                            now()
+                        );
+                })
+                ->where(
+                    'min_order',
+                    '<=',
+                    $subtotalOrder
+                )
+                ->get();
 
-                    $discount =
+            /*
+             * Dari semua promo yang memenuhi syarat,
+             * pilih promo dengan nilai diskon terbesar.
+             */
+            foreach ($promos as $candidatePromo) {
+
+                $candidateDiscount = 0;
+
+                // ---------------------------------------------
+                // PROMO PERCENTAGE
+                // ---------------------------------------------
+
+                if ($candidatePromo->type === 'percentage') {
+
+                    $percentage = (float) $candidatePromo->value;
+
+                    // Maksimal 100%
+                    $percentage = min(
+                        $percentage,
+                        100
+                    );
+
+                    $candidateDiscount =
                         $subtotalOrder *
-                        (
-                            (float) $promo->value / 100
-                        );
-
-                } else {
-
-                    $discount =
-                        (float) $promo->value;
+                        ($percentage / 100);
                 }
 
-                // Diskon tidak boleh lebih dari subtotal
-                $discount = min(
-                    $discount,
+                // ---------------------------------------------
+                // PROMO FIXED
+                // ---------------------------------------------
+
+                elseif ($candidatePromo->type === 'fixed') {
+
+                    $candidateDiscount =
+                        (float) $candidatePromo->value;
+                }
+
+                // ---------------------------------------------
+                // DISKON TIDAK BOLEH MELEBIHI SUBTOTAL
+                // ---------------------------------------------
+
+                $candidateDiscount = min(
+                    $candidateDiscount,
                     $subtotalOrder
                 );
+
+                // ---------------------------------------------
+                // PILIH DISKON TERBESAR
+                // ---------------------------------------------
+
+                if ($candidateDiscount > $discount) {
+                    $promo = $candidatePromo;
+                    $discount = $candidateDiscount;
+                }
             }
 
             // =====================================================
@@ -416,6 +418,13 @@ class OrderController extends Controller
                 'table_id' =>
                     $validated['table_id'] ?? null,
 
+                /*
+                 * Promo dipilih otomatis berdasarkan promo
+                 * terbaik yang memenuhi syarat.
+                 *
+                 * Jika tidak ada promo:
+                 * promo_id = null
+                 */
                 'promo_id' =>
                     $promo?->id,
 
@@ -433,9 +442,7 @@ class OrderController extends Controller
 
                 'discount' => $discount,
 
-                // Kolom lama tetap disimpan
-                // agar tidak perlu mengubah database.
-                // Customer tidak menggunakan status ini.
+                // Status awal pesanan
                 'status' => 'pending',
 
                 // Pembayaran dilakukan di kasir
@@ -538,107 +545,103 @@ class OrderController extends Controller
 
 
     // =========================================================
-// UPDATE STATUS PESANAN
-// ADMIN
-// =========================================================
-
-public function updateStatus(
-    Request $request,
-    $id
-) {
-    $validated = $request->validate([
-        'status' =>
-            'required|in:pending,confirmed,completed,cancelled',
-    ]);
-
-    // =========================================================
-    // CARI ORDER SESUAI RESTAURANT ADMIN
+    // UPDATE STATUS PESANAN
+    // ADMIN
     // =========================================================
 
-    $order = Order::where(
-        'restaurant_id',
-        $request->user()->restaurant_id
-    )
-        ->findOrFail($id);
-
-    $currentStatus = $order->status;
-    $newStatus = $validated['status'];
-
-    // =========================================================
-    // STATUS YANG SUDAH FINAL
-    // =========================================================
-
-    if (
-        in_array(
-            $currentStatus,
-            ['completed', 'cancelled']
-        )
+    public function updateStatus(
+        Request $request,
+        $id
     ) {
+        $validated = $request->validate([
+            'status' =>
+                'required|in:pending,confirmed,completed,cancelled',
+        ]);
+
+        $order = Order::where(
+            'restaurant_id',
+            $request->user()->restaurant_id
+        )
+            ->findOrFail($id);
+
+        $currentStatus = $order->status;
+        $newStatus = $validated['status'];
+
+        // =========================================================
+        // STATUS YANG SUDAH FINAL
+        // =========================================================
+
+        if (
+            in_array(
+                $currentStatus,
+                ['completed', 'cancelled']
+            )
+        ) {
+            return response()->json([
+                'message' =>
+                    'Status pesanan sudah tidak dapat diubah.',
+            ], 422);
+        }
+
+        // =========================================================
+        // ATURAN PERUBAHAN STATUS
+        // =========================================================
+
+        $allowedTransitions = [
+            'pending' => [
+                'confirmed',
+                'cancelled',
+            ],
+
+            'confirmed' => [
+                'completed',
+            ],
+        ];
+
+        if (
+            !isset($allowedTransitions[$currentStatus]) ||
+            !in_array(
+                $newStatus,
+                $allowedTransitions[$currentStatus]
+            )
+        ) {
+            return response()->json([
+                'message' =>
+                    "Status pesanan tidak dapat diubah dari {$currentStatus} menjadi {$newStatus}.",
+            ], 422);
+        }
+
+        // =========================================================
+        // UPDATE STATUS
+        // =========================================================
+
+        $order->update([
+            'status' => $newStatus,
+        ]);
+
+        // =========================================================
+        // LOAD RELASI
+        // =========================================================
+
+        $order->load([
+            'restaurant',
+            'table',
+            'promo',
+            'items.menu',
+            'items.variant',
+        ]);
+
+        // =========================================================
+        // RESPONSE
+        // =========================================================
+
         return response()->json([
             'message' =>
-                'Status pesanan sudah tidak dapat diubah.',
-        ], 422);
+                'Status pesanan berhasil diperbarui',
+
+            'data' => $order,
+        ]);
     }
-
-    // =========================================================
-    // ATURAN PERUBAHAN STATUS
-    // =========================================================
-
-    $allowedTransitions = [
-        'pending' => [
-    'confirmed',
-    'cancelled',
-],
-
-'confirmed' => [
-    'completed',
-],
-    ];
-
-    if (
-        !isset($allowedTransitions[$currentStatus]) ||
-        !in_array(
-            $newStatus,
-            $allowedTransitions[$currentStatus]
-        )
-    ) {
-        return response()->json([
-            'message' =>
-                "Status pesanan tidak dapat diubah dari {$currentStatus} menjadi {$newStatus}.",
-        ], 422);
-    }
-
-    // =========================================================
-    // UPDATE STATUS
-    // =========================================================
-
-    $order->update([
-        'status' => $newStatus,
-    ]);
-
-    // =========================================================
-    // LOAD RELASI
-    // =========================================================
-
-    $order->load([
-        'restaurant',
-        'table',
-        'promo',
-        'items.menu',
-        'items.variant',
-    ]);
-
-    // =========================================================
-    // RESPONSE
-    // =========================================================
-
-    return response()->json([
-        'message' =>
-            'Status pesanan berhasil diperbarui',
-
-        'data' => $order,
-    ]);
-}
 
 
     // =========================================================
