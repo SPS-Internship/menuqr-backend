@@ -16,80 +16,316 @@ use Illuminate\Support\Str;
 class OrderController extends Controller
 {
     // =========================================================
-    // MEMBUAT PESANAN
-    // CUSTOMER
+    // CUSTOMER - PREVIEW PROMO
     // =========================================================
-    public function store(Request $request)
+
+    public function preview(Request $request)
     {
         $validated = $request->validate([
             'restaurant_id' => 'required|exists:restaurants,id',
-            'table_id' => 'nullable|exists:tables,id',
-            'promo_id' => 'nullable|exists:promos,id',
 
-            'customer_name' => 'nullable|string|max:255',
-            'note' => 'nullable|string',
-
-            // LOKASI CUSTOMER
-            'latitude' => 'required|numeric|between:-90,90',
-            'longitude' => 'required|numeric|between:-180,180',
-
-            // ITEMS
             'items' => 'required|array|min:1',
-            'items.*.menu_id' => 'required|exists:menus,id',
-            'items.*.variant_id' => 'nullable|exists:menu_variants,id',
-            'items.*.addon_ids' => 'nullable|array',
-            'items.*.addon_ids.*' => 'exists:menu_addons,id',
-            'items.*.quantity' => 'required|integer|min:1',
-            'items.*.note' => 'nullable|string',
-        ]);
 
-        // =========================================================
-        // VALIDASI LOKASI CUSTOMER
-        // =========================================================
+            'items.*.menu_id' =>
+                'required|exists:menus,id',
+
+            'items.*.variant_id' =>
+                'nullable|exists:menu_variants,id',
+
+            'items.*.addon_ids' =>
+                'nullable|array',
+
+            'items.*.addon_ids.*' =>
+                'exists:menu_addons,id',
+
+            'items.*.quantity' =>
+                'required|integer|min:1',
+        ]);
 
         $restaurant = Restaurant::findOrFail(
             $validated['restaurant_id']
         );
 
+        $subtotal = 0;
+
+        foreach ($validated['items'] as $item) {
+
+            // =================================================
+            // MENU
+            // =================================================
+
+            $menu = Menu::where('id', $item['menu_id'])
+                ->where(
+                    'restaurant_id',
+                    $validated['restaurant_id']
+                )
+                ->where('is_available', true)
+                ->first();
+
+            if (!$menu) {
+                return response()->json([
+                    'message' =>
+                        'Menu tidak ditemukan atau tidak tersedia untuk restaurant ini.',
+                ], 422);
+            }
+
+            $unitPrice = (float) $menu->price;
+
+            // =================================================
+            // VARIANT
+            // =================================================
+
+            if (!empty($item['variant_id'])) {
+
+                $variant = MenuVariant::where(
+                    'id',
+                    $item['variant_id']
+                )
+                    ->where('menu_id', $menu->id)
+                    ->where('is_active', true)
+                    ->first();
+
+                if (!$variant) {
+                    return response()->json([
+                        'message' =>
+                            'Variant tidak valid untuk menu yang dipilih.',
+                    ], 422);
+                }
+
+                $unitPrice += (float) $variant->price;
+            }
+
+            // =================================================
+            // ADDONS
+            // =================================================
+
+            if (!empty($item['addon_ids'])) {
+
+                $addons = MenuAddon::whereIn(
+                    'id',
+                    $item['addon_ids']
+                )
+                    ->where('menu_id', $menu->id)
+                    ->where('is_active', true)
+                    ->get();
+
+                if (
+                    $addons->count() !==
+                    count($item['addon_ids'])
+                ) {
+                    return response()->json([
+                        'message' =>
+                            'Terdapat addon yang tidak valid untuk menu yang dipilih.',
+                    ], 422);
+                }
+
+                foreach ($addons as $addon) {
+                    $unitPrice += (float) $addon->price;
+                }
+            }
+
+            // =================================================
+            // SUBTOTAL ITEM
+            // =================================================
+
+            $subtotal +=
+                $unitPrice * (int) $item['quantity'];
+        }
+
+        // =====================================================
+        // CARI PROMO OTOMATIS
+        // =====================================================
+
+        $promo = null;
+        $discount = 0;
+
+        $promos = Promo::where(
+            'restaurant_id',
+            $validated['restaurant_id']
+        )
+            ->where('is_active', true)
+            ->where(function ($query) {
+                $query->whereNull('starts_at')
+                    ->orWhere('starts_at', '<=', now());
+            })
+            ->where(function ($query) {
+                $query->whereNull('ends_at')
+                    ->orWhere('ends_at', '>=', now());
+            })
+            ->where('min_order', '<=', $subtotal)
+            ->get();
+
+        foreach ($promos as $candidatePromo) {
+
+            $candidateDiscount = 0;
+
+            if ($candidatePromo->type === 'percentage') {
+
+                $percentage =
+                    (float) $candidatePromo->value;
+
+                // Maksimal 100%
+                $percentage = min(
+                    $percentage,
+                    100
+                );
+
+                $candidateDiscount =
+                    $subtotal *
+                    ($percentage / 100);
+
+            } elseif ($candidatePromo->type === 'fixed') {
+
+                $candidateDiscount =
+                    (float) $candidatePromo->value;
+            }
+
+            // Diskon tidak boleh lebih besar
+            // dari subtotal
+            $candidateDiscount = min(
+                $candidateDiscount,
+                $subtotal
+            );
+
+            // Pilih diskon terbesar
+            if ($candidateDiscount > $discount) {
+
+                $promo = $candidatePromo;
+                $discount = $candidateDiscount;
+            }
+        }
+
+        // =====================================================
+        // TOTAL
+        // =====================================================
+
+        $total = $subtotal - $discount;
+
+        // =====================================================
+        // RESPONSE
+        // =====================================================
+
+        return response()->json([
+            'data' => [
+                'subtotal' => $subtotal,
+
+                'promo' => $promo
+                    ? [
+                        'id' => $promo->id,
+                        'name' => $promo->name,
+                        'code' => $promo->code ?? null,
+                        'type' => $promo->type,
+                        'value' => (float) $promo->value,
+                    ]
+                    : null,
+
+                'discount' => $discount,
+
+                'total' => $total,
+            ],
+        ]);
+    }
+
+
+    // =========================================================
+    // CUSTOMER - CREATE ORDER
+    // =========================================================
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'restaurant_id' =>
+                'required|exists:restaurants,id',
+
+            'table_id' =>
+                'nullable|exists:tables,id',
+
+            'promo_id' =>
+                'nullable|exists:promos,id',
+
+            'customer_name' =>
+                'nullable|string|max:255',
+
+            'note' =>
+                'nullable|string',
+
+            'latitude' =>
+                'required|numeric|between:-90,90',
+
+            'longitude' =>
+                'required|numeric|between:-180,180',
+
+            'items' =>
+                'required|array|min:1',
+
+            'items.*.menu_id' =>
+                'required|exists:menus,id',
+
+            'items.*.variant_id' =>
+                'nullable|exists:menu_variants,id',
+
+            'items.*.addon_ids' =>
+                'nullable|array',
+
+            'items.*.addon_ids.*' =>
+                'exists:menu_addons,id',
+
+            'items.*.quantity' =>
+                'required|integer|min:1',
+
+            'items.*.note' =>
+                'nullable|string',
+        ]);
+
+        // =====================================================
+        // RESTAURANT
+        // =====================================================
+
+        $restaurant = Restaurant::findOrFail(
+            $validated['restaurant_id']
+        );
+
+        // =====================================================
+        // VALIDASI LOKASI
+        // =====================================================
+
         if (
             $restaurant->latitude === null ||
             $restaurant->longitude === null
         ) {
-            abort(
-                422,
-                'Lokasi restaurant belum diatur'
-            );
+            return response()->json([
+                'message' =>
+                    'Lokasi restaurant belum tersedia.',
+            ], 422);
         }
-
-        $restaurantLatitude = (float) $restaurant->latitude;
-        $restaurantLongitude = (float) $restaurant->longitude;
-
-        $customerLatitude = (float) $validated['latitude'];
-        $customerLongitude = (float) $validated['longitude'];
 
         $earthRadius = 6371000;
 
-        $lat1 = deg2rad($restaurantLatitude);
-        $lat2 = deg2rad($customerLatitude);
+        $lat1 = deg2rad(
+            (float) $validated['latitude']
+        );
+
+        $lat2 = deg2rad(
+            (float) $restaurant->latitude
+        );
 
         $deltaLat = deg2rad(
-            $customerLatitude - $restaurantLatitude
+            (float) $restaurant->latitude -
+            (float) $validated['latitude']
         );
 
-        $deltaLon = deg2rad(
-            $customerLongitude - $restaurantLongitude
+        $deltaLng = deg2rad(
+            (float) $restaurant->longitude -
+            (float) $validated['longitude']
         );
-
-        // =========================================================
-        // HAVERSINE FORMULA
-        // =========================================================
 
         $a =
-            sin($deltaLat / 2) * sin($deltaLat / 2) +
+            sin($deltaLat / 2) *
+            sin($deltaLat / 2) +
             cos($lat1) *
             cos($lat2) *
-            sin($deltaLon / 2) *
-            sin($deltaLon / 2);
+            sin($deltaLng / 2) *
+            sin($deltaLng / 2);
 
         $c = 2 * atan2(
             sqrt($a),
@@ -98,26 +334,33 @@ class OrderController extends Controller
 
         $distance = $earthRadius * $c;
 
-        // =========================================================
-        // CEK RADIUS
-        // =========================================================
-
-        if ($distance > $restaurant->location_radius) {
-            abort(
-                422,
-                'Anda berada di luar area restaurant. Silakan berada di dekat restaurant untuk melakukan pemesanan.'
-            );
+        if (
+            $restaurant->location_radius !== null &&
+            $distance > $restaurant->location_radius
+        ) {
+            return response()->json([
+                'message' =>
+                    'Anda berada di luar area restaurant.',
+                'distance' => round($distance, 2),
+                'allowed_radius' =>
+                    $restaurant->location_radius,
+            ], 422);
         }
 
-        // =========================================================
-        // PROSES ORDER
-        // =========================================================
+        // =====================================================
+        // TRANSACTION
+        // =====================================================
 
-        $order = DB::transaction(function () use ($validated) {
+        $order = DB::transaction(function () use (
+            $validated,
+            $restaurant
+        ) {
 
-            // =====================================================
-            // VALIDASI MEJA
-            // =====================================================
+            // =================================================
+            // TABLE
+            // =================================================
+
+            $table = null;
 
             if (!empty($validated['table_id'])) {
 
@@ -129,200 +372,171 @@ class OrderController extends Controller
                         'restaurant_id',
                         $validated['restaurant_id']
                     )
+                    ->where('is_active', true)
+                    ->lockForUpdate()
                     ->first();
 
                 if (!$table) {
                     abort(
                         422,
-                        'Meja tidak sesuai dengan restaurant'
+                        'Meja tidak ditemukan atau tidak aktif.'
                     );
                 }
 
-                if (!$table->is_active) {
+                $activeOrderExists = Order::where(
+                    'table_id',
+                    $table->id
+                )
+                    ->whereIn(
+                        'status',
+                        [
+                            'pending',
+                            'confirmed',
+                        ]
+                    )
+                    ->exists();
+
+                if ($activeOrderExists) {
                     abort(
-                        422,
-                        'Meja sedang tidak aktif'
+                        409,
+                        'Meja sedang digunakan oleh pesanan lain.'
                     );
                 }
             }
 
-            $subtotalOrder = 0;
-            $itemsData = [];
+            // =================================================
+            // HITUNG ITEM
+            // =================================================
 
-            // =====================================================
-            // PROSES SETIAP ITEM
-            // =====================================================
+            $subtotalOrder = 0;
+
+            $orderItems = [];
 
             foreach ($validated['items'] as $item) {
 
-                $menu = Menu::findOrFail(
+                $menu = Menu::where(
+                    'id',
                     $item['menu_id']
-                );
+                )
+                    ->where(
+                        'restaurant_id',
+                        $validated['restaurant_id']
+                    )
+                    ->where('is_available', true)
+                    ->first();
 
-                // -------------------------------------------------
-                // MENU HARUS MILIK RESTAURANT YANG SAMA
-                // -------------------------------------------------
-
-                if (
-                    $menu->restaurant_id !=
-                    $validated['restaurant_id']
-                ) {
+                if (!$menu) {
                     abort(
                         422,
-                        "Menu {$menu->name} tidak sesuai dengan restaurant"
+                        'Menu tidak ditemukan atau tidak tersedia.'
                     );
                 }
 
-                // -------------------------------------------------
-                // MENU HARUS TERSEDIA
-                // -------------------------------------------------
-
-                if (!$menu->is_available) {
-                    abort(
-                        422,
-                        "Menu {$menu->name} sedang tidak tersedia"
-                    );
-                }
-
-                // =================================================
-                // HARGA DASAR MENU
-                // =================================================
-
-                $menuPrice = (float) $menu->price;
-
-                // =================================================
-                // VARIANT
-                // =================================================
+                $unitPrice = (float) $menu->price;
 
                 $variant = null;
-                $variantPrice = 0;
 
                 if (!empty($item['variant_id'])) {
 
-                    $variant = MenuVariant::findOrFail(
+                    $variant = MenuVariant::where(
+                        'id',
                         $item['variant_id']
-                    );
+                    )
+                        ->where(
+                            'menu_id',
+                            $menu->id
+                        )
+                        ->where('is_active', true)
+                        ->first();
 
-                    // Variant harus milik menu yang dipilih
-                    if ($variant->menu_id != $menu->id) {
+                    if (!$variant) {
                         abort(
                             422,
-                            'Variant tidak sesuai dengan menu'
+                            'Variant tidak valid untuk menu ini.'
                         );
                     }
 
-                    // Variant harus aktif
-                    if (!$variant->is_active) {
-                        abort(
-                            422,
-                            "Variant {$variant->name} sedang tidak tersedia"
-                        );
-                    }
-
-                    $variantPrice = (float) $variant->price;
+                    $unitPrice +=
+                        (float) $variant->price;
                 }
 
-                // =================================================
-                // ADDON / TOPPING
-                // =================================================
-
-                $addons = [];
-                $addonTotal = 0;
+                $addons = collect();
 
                 if (!empty($item['addon_ids'])) {
 
-                    $addonIds = array_unique(
+                    $addons = MenuAddon::whereIn(
+                        'id',
                         $item['addon_ids']
-                    );
+                    )
+                        ->where(
+                            'menu_id',
+                            $menu->id
+                        )
+                        ->where('is_active', true)
+                        ->get();
 
-                    foreach ($addonIds as $addonId) {
-
-                        $addon = MenuAddon::findOrFail(
-                            $addonId
+                    if (
+                        $addons->count() !==
+                        count($item['addon_ids'])
+                    ) {
+                        abort(
+                            422,
+                            'Terdapat addon yang tidak valid untuk menu ini.'
                         );
+                    }
 
-                        // Addon harus milik menu yang sama
-                        if ($addon->menu_id != $menu->id) {
-                            abort(
-                                422,
-                                "Addon {$addon->name} tidak sesuai dengan menu"
-                            );
-                        }
-
-                        // Addon harus aktif
-                        if (!$addon->is_active) {
-                            abort(
-                                422,
-                                "Addon {$addon->name} sedang tidak tersedia"
-                            );
-                        }
-
-                        $addonPrice = (float) $addon->price;
-
-                        $addonTotal += $addonPrice;
-
-                        $addons[] = [
-                            'id' => $addon->id,
-                            'name' => $addon->name,
-                            'price' => $addonPrice,
-                        ];
+                    foreach ($addons as $addon) {
+                        $unitPrice +=
+                            (float) $addon->price;
                     }
                 }
 
-                // =================================================
-                // HITUNG HARGA ITEM
-                // =================================================
+                $quantity =
+                    (int) $item['quantity'];
 
-                $quantity = (int) $item['quantity'];
-
-                $unitPrice =
-                    $menuPrice +
-                    $variantPrice +
-                    $addonTotal;
-
-                $subtotal = $unitPrice * $quantity;
+                $subtotal =
+                    $unitPrice * $quantity;
 
                 $subtotalOrder += $subtotal;
 
-                $itemsData[] = [
-                    'menu_id' => $menu->id,
-                    'variant_id' => $variant?->id,
+                $orderItems[] = [
+                    'menu_id' =>
+                        $menu->id,
 
-                    'addons' => !empty($addons)
-                        ? $addons
-                        : null,
+                    'variant_id' =>
+                        $variant?->id,
 
-                    'quantity' => $quantity,
-                    'price' => $unitPrice,
-                    'subtotal' => $subtotal,
+                    'addons' =>
+                        !empty($item['addon_ids'])
+                            ? $item['addon_ids']
+                            : null,
 
-                    'note' => $item['note'] ?? null,
+                    'quantity' =>
+                        $quantity,
+
+                    'price' =>
+                        $unitPrice,
+
+                    'subtotal' =>
+                        $subtotal,
+
+                    'note' =>
+                        $item['note'] ?? null,
                 ];
             }
 
-            // =====================================================
-            // PROMO OTOMATIS
-            // =====================================================
+            // =================================================
+            // AUTO PROMO
+            // =================================================
 
             $promo = null;
             $discount = 0;
 
-            /*
-             * Cari semua promo yang:
-             * - milik restaurant yang sedang dipesan
-             * - aktif
-             * - sudah mulai
-             * - belum berakhir
-             * - minimum order terpenuhi
-             */
             $promos = Promo::where(
                 'restaurant_id',
                 $validated['restaurant_id']
             )
-                ->where(
-                    'is_active',
-                    true
-                )
+                ->where('is_active', true)
                 ->where(function ($query) {
                     $query->whereNull('starts_at')
                         ->orWhere(
@@ -346,23 +560,18 @@ class OrderController extends Controller
                 )
                 ->get();
 
-            /*
-             * Dari semua promo yang memenuhi syarat,
-             * pilih promo dengan nilai diskon terbesar.
-             */
             foreach ($promos as $candidatePromo) {
 
                 $candidateDiscount = 0;
 
-                // ---------------------------------------------
-                // PROMO PERCENTAGE
-                // ---------------------------------------------
+                if (
+                    $candidatePromo->type ===
+                    'percentage'
+                ) {
 
-                if ($candidatePromo->type === 'percentage') {
+                    $percentage =
+                        (float) $candidatePromo->value;
 
-                    $percentage = (float) $candidatePromo->value;
-
-                    // Maksimal 100%
                     $percentage = min(
                         $percentage,
                         100
@@ -371,98 +580,94 @@ class OrderController extends Controller
                     $candidateDiscount =
                         $subtotalOrder *
                         ($percentage / 100);
-                }
 
-                // ---------------------------------------------
-                // PROMO FIXED
-                // ---------------------------------------------
-
-                elseif ($candidatePromo->type === 'fixed') {
+                } elseif (
+                    $candidatePromo->type ===
+                    'fixed'
+                ) {
 
                     $candidateDiscount =
                         (float) $candidatePromo->value;
                 }
-
-                // ---------------------------------------------
-                // DISKON TIDAK BOLEH MELEBIHI SUBTOTAL
-                // ---------------------------------------------
 
                 $candidateDiscount = min(
                     $candidateDiscount,
                     $subtotalOrder
                 );
 
-                // ---------------------------------------------
-                // PILIH DISKON TERBESAR
-                // ---------------------------------------------
+                if (
+                    $candidateDiscount >
+                    $discount
+                ) {
+                    $promo =
+                        $candidatePromo;
 
-                if ($candidateDiscount > $discount) {
-                    $promo = $candidatePromo;
-                    $discount = $candidateDiscount;
+                    $discount =
+                        $candidateDiscount;
                 }
             }
 
-            // =====================================================
-            // TOTAL AKHIR
-            // =====================================================
+            $total =
+                $subtotalOrder - $discount;
 
-            $total = $subtotalOrder - $discount;
-
-            // =====================================================
-            // BUAT ORDER
-            // =====================================================
+            // =================================================
+            // CREATE ORDER
+            // =================================================
 
             $order = Order::create([
-                'restaurant_id' => $validated['restaurant_id'],
+                'restaurant_id' =>
+                    $validated['restaurant_id'],
 
                 'table_id' =>
                     $validated['table_id'] ?? null,
 
-                /*
-                 * Promo dipilih otomatis berdasarkan promo
-                 * terbaik yang memenuhi syarat.
-                 *
-                 * Jika tidak ada promo:
-                 * promo_id = null
-                 */
                 'promo_id' =>
                     $promo?->id,
 
                 'order_code' =>
                     'ORD-' .
-                    strtoupper(Str::random(8)),
+                    strtoupper(
+                        Str::random(8)
+                    ),
 
                 'customer_name' =>
-                    $validated['customer_name'] ?? null,
+                    $validated['customer_name']
+                    ?? null,
 
                 'note' =>
-                    $validated['note'] ?? null,
+                    $validated['note']
+                    ?? null,
 
-                'total' => $total,
+                'total' =>
+                    $total,
 
-                'discount' => $discount,
+                'discount' =>
+                    $discount,
 
-                // Status awal pesanan
-                'status' => 'pending',
+                'status' =>
+                    'pending',
 
-                // Pembayaran dilakukan di kasir
-                'payment_status' => 'unpaid',
+                'payment_status' =>
+                    'unpaid',
             ]);
 
-            // =====================================================
-            // SIMPAN ORDER ITEMS
-            // =====================================================
+            // =================================================
+            // CREATE ORDER ITEMS
+            // =================================================
 
-            $order->items()->createMany(
-                $itemsData
-            );
+            foreach ($orderItems as $orderItem) {
+
+                $order->items()->create(
+                    $orderItem
+                );
+            }
 
             return $order;
         });
 
-        // =========================================================
-        // LOAD RELASI
-        // =========================================================
+        // =====================================================
+        // LOAD RELATIONS
+        // =====================================================
 
         $order->load([
             'restaurant',
@@ -472,18 +677,21 @@ class OrderController extends Controller
             'items.variant',
         ]);
 
-        // =========================================================
-        // RESPONSE PESANAN BERHASIL
-        // =========================================================
+        // =====================================================
+        // RESPONSE
+        // =====================================================
 
         return response()->json([
             'message' =>
                 'Pesanan berhasil dibuat. Silakan lanjut melakukan pembayaran di kasir.',
 
-            'data' => $order,
+            'data' =>
+                $order,
 
             'payment' => [
-                'status' => 'unpaid',
+                'status' =>
+                    'unpaid',
+
                 'message' =>
                     'Silakan lanjut melakukan pembayaran di kasir.',
             ],
@@ -492,24 +700,22 @@ class OrderController extends Controller
 
 
     // =========================================================
-    // DETAIL PESANAN
-    // CUSTOMER TIDAK PERLU LOGIN
-    // AKSES MENGGUNAKAN ORDER CODE
+    // CUSTOMER - SHOW ORDER
     // =========================================================
 
     public function show($orderCode)
     {
-        $order = Order::with([
-            'restaurant',
-            'table',
-            'promo',
-            'items.menu',
-            'items.variant',
-        ])
-            ->where(
-                'order_code',
-                $orderCode
-            )
+        $order = Order::where(
+            'order_code',
+            $orderCode
+        )
+            ->with([
+                'restaurant',
+                'table',
+                'promo',
+                'items.menu',
+                'items.variant',
+            ])
             ->firstOrFail();
 
         return response()->json([
@@ -519,34 +725,33 @@ class OrderController extends Controller
 
 
     // =========================================================
-    // SEMUA PESANAN ADMIN
+    // ADMIN - LIST ORDERS
     // =========================================================
 
     public function index(Request $request)
     {
-        $admin = $request->user();
-
-        $orders = Order::with([
-            'restaurant',
-            'table',
-            'promo',
-            'items.menu',
-            'items.variant',
-        ])
-            ->where(
-                'restaurant_id',
-                $admin->restaurant_id
-            )
+        $orders = Order::where(
+            'restaurant_id',
+            $request->user()->restaurant_id
+        )
+            ->with([
+                'restaurant',
+                'table',
+                'promo',
+                'items.menu',
+                'items.variant',
+            ])
             ->latest()
             ->get();
 
-        return response()->json($orders);
+        return response()->json([
+            'data' => $orders,
+        ]);
     }
 
 
     // =========================================================
-    // UPDATE STATUS PESANAN
-    // ADMIN
+    // ADMIN - UPDATE ORDER STATUS
     // =========================================================
 
     public function updateStatus(
@@ -564,17 +769,19 @@ class OrderController extends Controller
         )
             ->findOrFail($id);
 
-        $currentStatus = $order->status;
-        $newStatus = $validated['status'];
+        $currentStatus =
+            $order->status;
 
-        // =========================================================
-        // STATUS YANG SUDAH FINAL
-        // =========================================================
+        $newStatus =
+            $validated['status'];
 
         if (
             in_array(
                 $currentStatus,
-                ['completed', 'cancelled']
+                [
+                    'completed',
+                    'cancelled',
+                ]
             )
         ) {
             return response()->json([
@@ -582,10 +789,6 @@ class OrderController extends Controller
                     'Status pesanan sudah tidak dapat diubah.',
             ], 422);
         }
-
-        // =========================================================
-        // ATURAN PERUBAHAN STATUS
-        // =========================================================
 
         $allowedTransitions = [
             'pending' => [
@@ -599,10 +802,16 @@ class OrderController extends Controller
         ];
 
         if (
-            !isset($allowedTransitions[$currentStatus]) ||
+            !isset(
+                $allowedTransitions[
+                    $currentStatus
+                ]
+            ) ||
             !in_array(
                 $newStatus,
-                $allowedTransitions[$currentStatus]
+                $allowedTransitions[
+                    $currentStatus
+                ]
             )
         ) {
             return response()->json([
@@ -611,17 +820,10 @@ class OrderController extends Controller
             ], 422);
         }
 
-        // =========================================================
-        // UPDATE STATUS
-        // =========================================================
-
         $order->update([
-            'status' => $newStatus,
+            'status' =>
+                $newStatus,
         ]);
-
-        // =========================================================
-        // LOAD RELASI
-        // =========================================================
 
         $order->load([
             'restaurant',
@@ -631,22 +833,18 @@ class OrderController extends Controller
             'items.variant',
         ]);
 
-        // =========================================================
-        // RESPONSE
-        // =========================================================
-
         return response()->json([
             'message' =>
                 'Status pesanan berhasil diperbarui',
 
-            'data' => $order,
+            'data' =>
+                $order,
         ]);
     }
 
 
     // =========================================================
-    // UPDATE STATUS PEMBAYARAN
-    // ADMIN / KASIR
+    // ADMIN - UPDATE PAYMENT STATUS
     // =========================================================
 
     public function updatePaymentStatus(
@@ -664,41 +862,15 @@ class OrderController extends Controller
         )
             ->findOrFail($id);
 
-        // =========================================================
-        // STATUS PEMBAYARAN SAMA
-        // =========================================================
-
-        if (
-            $order->payment_status ===
-            $validated['payment_status']
-        ) {
-            return response()->json([
-                'message' =>
-                    'Status pembayaran sudah ' .
-                    $validated['payment_status'],
-
-                'data' => $order,
-            ]);
-        }
-
-        // =========================================================
-        // PEMBAYARAN YANG SUDAH LUNAS
-        // TIDAK BOLEH DIKEMBALIKAN KE UNPAID
-        // =========================================================
-
         if (
             $order->payment_status === 'paid' &&
             $validated['payment_status'] === 'unpaid'
         ) {
             return response()->json([
                 'message' =>
-                    'Pembayaran yang sudah lunas tidak dapat dibatalkan.',
+                    'Status pembayaran yang sudah paid tidak dapat dikembalikan menjadi unpaid.',
             ], 422);
         }
-
-        // =========================================================
-        // UPDATE PEMBAYARAN
-        // =========================================================
 
         $order->update([
             'payment_status' =>
@@ -717,7 +889,8 @@ class OrderController extends Controller
             'message' =>
                 'Status pembayaran berhasil diperbarui',
 
-            'data' => $order,
+            'data' =>
+                $order,
         ]);
     }
 }

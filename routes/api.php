@@ -101,24 +101,24 @@ Route::get(
 );
 
 
-// =========================================================
-// ORDER CUSTOMER
-// =========================================================
+// ====================
+// CUSTOMER - ORDERS
+// ====================
 
-// Membuat pesanan
+Route::post(
+    '/orders/preview',
+    [OrderController::class, 'preview']
+);
+
 Route::post(
     '/orders',
     [OrderController::class, 'store']
 );
 
-// Melihat detail pesanan berdasarkan order code
 Route::get(
     '/orders/{orderCode}',
     [OrderController::class, 'show']
 );
-
-// Tidak ada WhatsApp lagi.
-// Tidak ada endpoint status pesanan customer.
 
 
 // =========================================================
