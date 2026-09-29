@@ -23,11 +23,10 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
 
-
-
 // =========================================================
 // PUBLIC
 // =========================================================
+
 
 // =========================================================
 // RESTAURANT
@@ -36,6 +35,13 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::get(
     '/restaurants',
     [RestaurantController::class, 'index']
+);
+
+// Data restoran untuk halaman admin login
+// PUBLIC - tidak membutuhkan token
+Route::get(
+    '/restaurants/{slug}/admin-login',
+    [RestaurantController::class, 'adminLogin']
 );
 
 Route::get(
@@ -101,9 +107,9 @@ Route::get(
 );
 
 
-// ====================
+// =========================================================
 // CUSTOMER - ORDERS
-// ====================
+// =========================================================
 
 Route::post(
     '/orders/preview',
@@ -128,7 +134,6 @@ Route::get(
 Route::middleware('auth:sanctum')->group(function () {
 
 
-
     // =========================================================
     // AUTH
     // =========================================================
@@ -143,29 +148,50 @@ Route::middleware('auth:sanctum')->group(function () {
         [AuthController::class, 'logout']
     );
 
+
+    // =========================================================
+    // CATEGORY
+    // =========================================================
+
     Route::get(
         '/admin/categories',
         [CategoryController::class, 'adminIndex']
     );
 
+    Route::post(
+        '/categories',
+        [CategoryController::class, 'store']
+    );
+
+    Route::put(
+        '/categories/{id}',
+        [CategoryController::class, 'update']
+    );
+
+    Route::delete(
+        '/categories/{id}',
+        [CategoryController::class, 'destroy']
+    );
+
+
     // =========================================================
-// SETTINGS ADMIN
-// =========================================================
+    // SETTINGS ADMIN
+    // =========================================================
 
-Route::get(
-    '/admin/settings/profile',
-    [AdminSettingsController::class, 'profile']
-);
+    Route::get(
+        '/admin/settings/profile',
+        [AdminSettingsController::class, 'profile']
+    );
 
-Route::put(
-    '/admin/settings/profile',
-    [AdminSettingsController::class, 'updateProfile']
-);
+    Route::put(
+        '/admin/settings/profile',
+        [AdminSettingsController::class, 'updateProfile']
+    );
 
-Route::put(
-    '/admin/settings/password',
-    [AdminSettingsController::class, 'updatePassword']
-);
+    Route::put(
+        '/admin/settings/password',
+        [AdminSettingsController::class, 'updatePassword']
+    );
 
 
     // =========================================================
@@ -185,26 +211,6 @@ Route::put(
     Route::delete(
         '/restaurants/{id}',
         [RestaurantController::class, 'destroy']
-    );
-
-
-    // =========================================================
-    // CATEGORY
-    // =========================================================
-
-    Route::post(
-        '/categories',
-        [CategoryController::class, 'store']
-    );
-
-    Route::put(
-        '/categories/{id}',
-        [CategoryController::class, 'update']
-    );
-
-    Route::delete(
-        '/categories/{id}',
-        [CategoryController::class, 'destroy']
     );
 
 
@@ -339,27 +345,27 @@ Route::put(
 
 
     // =========================================================
-// ORDERS
-// =========================================================
+    // ORDERS
+    // =========================================================
 
-// Admin melihat semua pesanan restaurant miliknya
-Route::get(
-    '/orders',
-    [OrderController::class, 'index']
-);
+    // Admin melihat semua pesanan restaurant miliknya
+    Route::get(
+        '/orders',
+        [OrderController::class, 'index']
+    );
 
-// Admin mengubah status pesanan
-Route::put(
-    '/orders/{id}/status',
-    [OrderController::class, 'updateStatus']
-);
+    // Admin mengubah status pesanan
+    Route::put(
+        '/orders/{id}/status',
+        [OrderController::class, 'updateStatus']
+    );
 
-// Kasir mengubah pembayaran:
-// unpaid -> paid
-Route::put(
-    '/orders/{id}/payment-status',
-    [OrderController::class, 'updatePaymentStatus']
-);
+    // Kasir mengubah pembayaran
+    // unpaid -> paid
+    Route::put(
+        '/orders/{id}/payment-status',
+        [OrderController::class, 'updatePaymentStatus']
+    );
 
 
     // =========================================================
@@ -385,4 +391,5 @@ Route::put(
         '/reports/sales/export/pdf',
         [ReportController::class, 'exportPdf']
     );
+
 });

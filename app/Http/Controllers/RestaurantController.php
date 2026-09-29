@@ -19,6 +19,32 @@ class RestaurantController extends Controller
         return response()->json($restaurants);
     }
 
+
+    // Menampilkan data restoran untuk halaman admin login
+    public function adminLogin($slug)
+    {
+        $restaurant = Restaurant::where('slug', $slug)
+            ->where('is_active', true)
+            ->first();
+
+        if (!$restaurant) {
+            return response()->json([
+                'message' => 'Restoran tidak ditemukan.'
+            ], 404);
+        }
+
+        return response()->json([
+            'message' => 'Data restoran berhasil diambil',
+            'data' => [
+                'id' => $restaurant->id,
+                'name' => $restaurant->name,
+                'slug' => $restaurant->slug,
+                'logo' => $restaurant->logo,
+            ],
+        ]);
+    }
+
+
     // Menampilkan menu berdasarkan slug restoran
     public function menu($slug)
     {
