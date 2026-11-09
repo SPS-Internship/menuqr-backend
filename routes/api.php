@@ -76,8 +76,7 @@ Route::get(
 
 
 // =========================================================
-// VARIANT
-// CUSTOMER
+// VARIANT - CUSTOMER
 // =========================================================
 
 Route::get(
@@ -87,8 +86,7 @@ Route::get(
 
 
 // =========================================================
-// ADDON / TOPPING
-// CUSTOMER
+// ADDON / TOPPING - CUSTOMER
 // =========================================================
 
 Route::get(
@@ -352,6 +350,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get(
         '/orders',
         [OrderController::class, 'index']
+    );
+
+    // Cetak nota pesanan
+    Route::get(
+        '/orders/{id}/receipt',
+        [OrderController::class, 'receipt']
     );
 
     // Admin mengubah status pesanan
