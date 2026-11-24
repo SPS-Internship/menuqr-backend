@@ -449,11 +449,52 @@ class OrderController extends Controller
             ])
             ->findOrFail($id);
 
-        $height = max(420, 300 + ($order->items->count() * 65));
+        // Lebar kertas thermal 57 mm dalam satuan point.
+        $paperWidth = 161.57;
+
+        // Estimasi tinggi nota.
+        $height = 350;
+
+        foreach ($order->items as $item) {
+            $menuName = $item->menu->name ?? 'Menu dihapus';
+
+            $height += 65;
+
+            $height += max(
+                0,
+                ceil(Str::length($menuName) / 24) - 1
+            ) * 12;
+
+            if ($item->variant) {
+                $height += 15;
+            }
+
+            if ($item->note) {
+                $height += 20;
+            }
+        }
+
+        if ($order->note) {
+            $height += 30;
+        }
+
+        if ($order->promo) {
+            $height += 20;
+        }
+
+        $height += 100;
+        $height = max(420, $height);
 
         $pdf = Pdf::loadView('orders.receipt', [
             'order' => $order,
-        ])->setPaper([0, 0, 226.77, $height]);
+        ]);
+
+        $pdf->setPaper([
+            0,
+            0,
+            $paperWidth,
+            $height,
+        ]);
 
         return $pdf->stream(
             'nota-' . $order->order_code . '.pdf'
